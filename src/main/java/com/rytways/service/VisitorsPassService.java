@@ -65,7 +65,8 @@ public class VisitorsPassService {
 	public VisitorsPass save(VisitorsPass visitorsPass) {
 		String isSaved = "";
 		if (visitorsPass.getVisitingDate() == null)
-			visitorsPass.setEntryDate(LocalDate.now());
+			visitorsPass.setVisitingDate(LocalDateTime.now());
+		visitorsPass.setEntryDate(LocalDate.now());
 		LocalDate financialDate = Utils.getFinancialStartDate(
 				visitorsPass.getVisitingDate() != null ? visitorsPass.getVisitingDate().toLocalDate()
 						: visitorsPass.getEntryDate());
@@ -73,8 +74,7 @@ public class VisitorsPassService {
 				.getFinancialYear(visitorsPass.getVisitingDate() != null ? visitorsPass.getVisitingDate().toLocalDate()
 						: visitorsPass.getEntryDate());
 		Optional<SeriousNo> seriousNo = seriousRepo.findSeriousNo(financialDate, "Visitors Serious");
-//		Optional<UnitMaster> unit = unitRepo.findByUnitName(visitorsPass.getUnit());
-		Optional<UnitMaster> unit = unitRepo.findById(Long.parseLong(visitorsPass.getUnit()));
+		Optional<UnitMaster> unit = unitRepo.findByUnitName(visitorsPass.getUnit());
 		Optional<CompanyMaster> company = companyMasterRepository.findById(unit.get().getId().intValue());
 		if (seriousNo.isPresent()) {
 			int no = seriousNo.get().getSeriousNo() + 1;
@@ -90,7 +90,7 @@ public class VisitorsPassService {
 		if ("Yes".equals(visitorsPass.getPriorAppointment()))
 			visitorsPass.setStatus("Created");
 		else
-			visitorsPass.setStatus("-");
+			visitorsPass.setStatus("NoPriority");
 		visitorsPass = visitorsPassRepo.save(visitorsPass);
 		Optional<Categories> cat = categoriesRepo.findById((long) visitorsPass.getVisitorTypeId());
 		visitorsPass.setVisitorType(cat.get());
@@ -104,11 +104,22 @@ public class VisitorsPassService {
 		return visitorsPass;
 	}
 
-	public VisitorsPass update(VisitorsPass visitorsPass) {
+	public VisitorsPass update(VisitorsPass NewVisitorsPass) {
 		String isSaved = "";
 
-		visitorsPass = visitorsPassRepo.save(visitorsPass);
-		return visitorsPass;
+		Optional<VisitorsPass> visitorsPassOpt = visitorsPassRepo.findById(NewVisitorsPass.getVisitorId());
+		VisitorsPass visitorsPass = visitorsPassOpt.get();
+		if (visitorsPass.getInTime() != null || visitorsPass.getOutTime() != null) {
+			throw new RuntimeException("We can't Edit the Visitor Pass after InTime or OutTime is set");
+		}
+		if (NewVisitorsPass.getVisitingDate() != null && visitorsPass.getVisitingDate() != null) {
+			if (NewVisitorsPass.getVisitingDate().isBefore(visitorsPass.getVisitingDate())) {
+				throw new RuntimeException("Visiting Date Should not be a lower date than the previous Visiting Date");
+			}
+		}
+
+		NewVisitorsPass = visitorsPassRepo.save(NewVisitorsPass);
+		return NewVisitorsPass;
 	}
 
 	public VisitorsPass updateStatus(Long entryId, String status) {
@@ -148,36 +159,56 @@ public class VisitorsPassService {
 	}
 
 	@Transactional
-	public String processQrScan(Long visitorId, String passNo) {
+	public String processQrScan(String passNo) {
 		Optional<VisitorsPass> visitorOptional = visitorsPassRepo.findByPassNo(passNo);
 		if (!visitorOptional.isPresent()) {
-			return "Invalid Pass Number";
+			return "Error: Invalid Pass Number";
 		}
 		VisitorsPass visitor = visitorOptional.get();
 //		visitor.getVisitorId().equals(visitorId);
+//		if (!visitor.getVisitorId().equals(visitorId)) {
+//			return "Invalid: Pass number does not belong to this visitor";
+//		}
+		if (visitor.getVisitingDate() == null) {
+			return "Error: No visiting date set";
+		}
 
-		LocalDateTime now = LocalDateTime.now();
-		if (visitor.getInTime() == null && visitor.getOutTime() == null) {
-			visitor.setInTime(now);
-			visitor.setStatus("IN");
-			visitorsPassRepo.save(visitor);
-			return "In-Time marked successfully at " + visitor.getInTime();
-		} else if (visitor.getInTime() != null && visitor.getOutTime() == null) {
+		if (visitor.getVisitingDate() != null && visitor.getVisitingDate().toLocalDate().equals(LocalDate.now())) {
 
-			LocalDateTime inTime = visitor.getInTime();
-			long minutesElapsed = Duration.between(inTime, now).toMinutes();
+			LocalDateTime now = LocalDateTime.now();
+			String currentStatus = visitor.getStatus() != null ? visitor.getStatus().trim().toUpperCase() : "";
+			if (visitor.getInTime() == null && visitor.getOutTime() == null && currentStatus.equalsIgnoreCase("Created")
+					|| currentStatus.equals("-") || currentStatus.isEmpty()) {
+				visitor.setInTime(now);
+				visitor.setStatus("IN");
 
-			if (minutesElapsed < 15) {
-				long waitTime = 15 - minutesElapsed;
-				return "Wait: Please wait " + waitTime + " more minutes to mark Out-Time.";
-			} else {
-				visitor.setOutTime(now);
-				visitor.setStatus("OUT");
 				visitorsPassRepo.save(visitor);
-				return "Out-Time marked successfully at " + now.toLocalTime().toString().substring(0, 5);
+				return "In-Time marked successfully at " + visitor.getInTime();
+			} else if (visitor.getInTime() != null && visitor.getOutTime() == null
+					&& currentStatus.equalsIgnoreCase("IN") && !currentStatus.equalsIgnoreCase("OUT")) {
+
+				LocalDateTime inTime = visitor.getInTime();
+				long minutesElapsed = Duration.between(inTime, now).toMinutes();
+
+				if (minutesElapsed < 15) {
+					long waitTime = 15 - minutesElapsed;
+					return "Wait: Please wait " + waitTime + " more minutes to mark Out-Time.";
+				} else {
+					visitor.setOutTime(now);
+					visitor.setStatus("OUT");
+					visitorsPassRepo.save(visitor);
+					return "Out-Time marked successfully at " + now.toLocalTime().toString().substring(0, 5);
+				}
+			} else if (currentStatus != null && currentStatus != null && currentStatus.equalsIgnoreCase("OUT")) {
+				return "Warning: Visitor has already checked out.";
+			} else {
+				return "Error: Unknown pass status state: " + visitor;
 			}
 		} else {
-			return "Warning: Visitor has already checked out.";
+
+//			throw new RuntimeException("Visting Date is Not Match With today Date. ");
+			return "Error: This pass is valid only for " + visitor.getVisitingDate();
+
 		}
 	}
 
